@@ -1,6 +1,6 @@
 #include <windows.h>
 #pragma warning(push)
-#pragma warning(disable:4091)
+#pragma warning(disable : 4091)
 #include <dbghelp.h>
 #pragma warning(pop)
 #include <stdio.h>
@@ -8,53 +8,72 @@
 #include <signal.h>
 #include "crashdump.h"
 
-BOOL
-(WINAPI*
- MiniDumpWriteDumpPtr)(
-     _In_ HANDLE hProcess,
-     _In_ DWORD ProcessId,
-     _In_ HANDLE hFile,
-     _In_ MINIDUMP_TYPE DumpType,
-     _In_opt_ PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
-     _In_opt_ PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
-     _In_opt_ PMINIDUMP_CALLBACK_INFORMATION CallbackParam
- );
+#define PROCESS_CALLBACK_FILTER_ENABLED 0x1
 
-BOOL
-(WINAPI*
- SetProcessUserModeExceptionPolicyPtr)(
-     _In_ DWORD PolicyFlags
- );
+BOOL(WINAPI *
+         MiniDumpWriteDumpPtr)
+(
+    _In_ HANDLE hProcess,
+    _In_ DWORD ProcessId,
+    _In_ HANDLE hFile,
+    _In_ MINIDUMP_TYPE DumpType,
+    _In_opt_ PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
+    _In_opt_ PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
+    _In_opt_ PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
 
-BOOL
-(WINAPI*
- GetProcessUserModeExceptionPolicyPtr)(
-     _Out_ LPDWORD PolicyFlags
- );
+BOOL(WINAPI *
+         SetProcessUserModeExceptionPolicyPtr)
+(
+    _In_ DWORD PolicyFlags);
+
+BOOL(WINAPI *
+         GetProcessUserModeExceptionPolicyPtr)
+(
+    _Out_ LPDWORD PolicyFlags);
 
 void CrashDumpInitialize()
 {
-    // Find the DbgHelp module first
-    HMODULE module = LoadLibrary("dbghelp.dll");
- 
-    if(module)
-        *(FARPROC*)&MiniDumpWriteDumpPtr = GetProcAddress(module, "MiniDumpWriteDump");
+    // Get handles to kernel32 and dbghelp
+    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+    HMODULE hDbghelp = LoadLibraryA("dbghelp.dll");
 
-    if(MiniDumpWriteDumpPtr)
-        AddVectoredExceptionHandler(0, CrashDumpVectoredHandler);
+    if (hDbghelp)
+        *(FARPROC *)&MiniDumpWriteDumpPtr = GetProcAddress(hDbghelp, "MiniDumpWriteDump");
+
+    if (hKernel32)
+    {
+        *(FARPROC *)&SetProcessUserModeExceptionPolicyPtr = GetProcAddress(hKernel32, "SetProcessUserModeExceptionPolicy");
+        *(FARPROC *)&GetProcessUserModeExceptionPolicyPtr = GetProcAddress(hKernel32, "GetProcessUserModeExceptionPolicy");
+    }
+
+    if (MiniDumpWriteDumpPtr)
+        SetUnhandledExceptionFilter(CrashDumpExceptionHandler);
+
+    // Ensure that exceptions are not swallowed when dispatching certain Windows
+    // messages.
+    //
+    // http://blog.paulbetts.org/index.php/2010/07/20/the-case-of-the-disappearing-onload-exception-user-mode-callback-exceptions-in-x64/
+    // https://support.microsoft.com/en-gb/kb/976038
+    if (SetProcessUserModeExceptionPolicyPtr && GetProcessUserModeExceptionPolicyPtr)
+    {
+        DWORD flags = 0;
+
+        if (GetProcessUserModeExceptionPolicyPtr(&flags))
+            SetProcessUserModeExceptionPolicyPtr(flags & ~PROCESS_CALLBACK_FILTER_ENABLED);
+    }
 
     // If not running under a debugger, redirect purecall, terminate, abort, and
     // invalid parameter callbacks to force generate a dump.
-    if(!IsDebuggerPresent())
+    if (!IsDebuggerPresent())
     {
-        _set_purecall_handler(TerminateHandler);                // https://msdn.microsoft.com/en-us/library/t296ys27.aspx
-        _set_invalid_parameter_handler(InvalidParameterHandler);// https://msdn.microsoft.com/en-us/library/a9yf33zb.aspx
-        set_terminate(TerminateHandler);                        // http://en.cppreference.com/w/cpp/error/set_terminate
-        signal(SIGABRT, AbortHandler);                          // https://msdn.microsoft.com/en-us/library/xdkz3x12.aspx
+        _set_purecall_handler(TerminateHandler);                 // https://msdn.microsoft.com/en-us/library/t296ys27.aspx
+        _set_invalid_parameter_handler(InvalidParameterHandler); // https://msdn.microsoft.com/en-us/library/a9yf33zb.aspx
+        set_terminate(TerminateHandler);                         // http://en.cppreference.com/w/cpp/error/set_terminate
+        signal(SIGABRT, AbortHandler);                           // https://msdn.microsoft.com/en-us/library/xdkz3x12.aspx
     }
 }
 
-void CrashDumpFatal(const char* Format, ...)
+void CrashDumpFatal(const char *Format, ...)
 {
     char buffer[1024];
     va_list va;
@@ -66,13 +85,13 @@ void CrashDumpFatal(const char* Format, ...)
     MessageBoxA(nullptr, buffer, "Error", MB_ICONERROR);
 }
 
-void CrashDumpCreate(EXCEPTION_POINTERS* ExceptionPointers)
+void CrashDumpCreate(EXCEPTION_POINTERS *ExceptionPointers)
 {
     // Generate a crash dump file in the minidump directory
     wchar_t dumpFile[MAX_PATH];
     wchar_t dumpDir[MAX_PATH];
 
-    if(!GetCurrentDirectoryW(ARRAYSIZE(dumpDir), dumpDir))
+    if (!GetCurrentDirectoryW(ARRAYSIZE(dumpDir), dumpDir))
     {
         CrashDumpFatal("Unable to obtain current directory during crash dump");
         return;
@@ -97,7 +116,7 @@ void CrashDumpCreate(EXCEPTION_POINTERS* ExceptionPointers)
     // Open the file
     HANDLE fileHandle = CreateFileW(dumpFile, GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
-    if(fileHandle == INVALID_HANDLE_VALUE)
+    if (fileHandle == INVALID_HANDLE_VALUE)
     {
         CrashDumpFatal("Failed to open file path '%ws' while generating crash dump", dumpFile);
         return;
@@ -111,19 +130,19 @@ void CrashDumpCreate(EXCEPTION_POINTERS* ExceptionPointers)
     info.ExceptionPointers = ExceptionPointers;
     info.ClientPointers = TRUE;
 
-    if(!MiniDumpWriteDumpPtr(GetCurrentProcess(), GetCurrentProcessId(), fileHandle, MiniDumpNormal, &info, nullptr, nullptr))
+    if (!MiniDumpWriteDumpPtr(GetCurrentProcess(), GetCurrentProcessId(), fileHandle, MiniDumpNormal, &info, nullptr, nullptr))
         CrashDumpFatal("MiniDumpWriteDump failed. Error: %u", GetLastError());
 
     // Close the file & done
     CloseHandle(fileHandle);
 }
 
-LONG CALLBACK CrashDumpVectorHandler(EXCEPTION_POINTERS* ExceptionInfo)
+LONG CALLBACK CrashDumpExceptionHandler(EXCEPTION_POINTERS *ExceptionInfo)
 {
     // Any "exception" under 0x1000 is usually a failed remote procedure call (RPC)
-    if(ExceptionInfo && ExceptionInfo->ExceptionRecord->ExceptionCode > 0x1000)
+    if (ExceptionInfo && ExceptionInfo->ExceptionRecord->ExceptionCode > 0x1000)
     {
-        switch(ExceptionInfo->ExceptionRecord->ExceptionCode)
+        switch (ExceptionInfo->ExceptionRecord->ExceptionCode)
         {
         case DBG_PRINTEXCEPTION_C:  // OutputDebugStringA
         case 0x4001000A:            // OutputDebugStringW
@@ -138,7 +157,7 @@ LONG CALLBACK CrashDumpVectorHandler(EXCEPTION_POINTERS* ExceptionInfo)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-void InvalidParameterHandler(const wchar_t* Expression, const wchar_t* Function, const wchar_t* File, unsigned int Line, uintptr_t Reserved)
+void InvalidParameterHandler(const wchar_t *Expression, const wchar_t *Function, const wchar_t *File, unsigned int Line, uintptr_t Reserved)
 {
     CrashDumpFatal("Invalid parameter passed to CRT function! Program will now generate an exception.\n\nFile: %ws\nFunction: %ws\nExpression: %ws",
                    Function ? Function : L"???",
